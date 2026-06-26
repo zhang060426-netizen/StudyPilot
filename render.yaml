@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: studypilot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-deploy.txt && python scripts/create_sample_data.py && python src/init_db.py
+    startCommand: python src/app.py
+    envVars:
+      - key: LLM_PROVIDER
+        value: demo
+      - key: PYTHON_VERSION
+        value: 3.12.6
