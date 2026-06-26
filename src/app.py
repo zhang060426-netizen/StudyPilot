@@ -50,6 +50,8 @@ MINERADIO_HOST = "127.0.0.1"
 MINERADIO_PORT = int(os.getenv("MINERADIO_PORT", "3100"))
 MINERADIO_URL = f"http://{MINERADIO_HOST}:{MINERADIO_PORT}"
 MINERADIO_EXTERNAL_URL = (os.getenv("MINERADIO_EXTERNAL_URL") or "").strip()
+if not MINERADIO_EXTERNAL_URL and (os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL")):
+    MINERADIO_EXTERNAL_URL = "https://studypilot-mineradio.onrender.com"
 if MINERADIO_EXTERNAL_URL and not re.match(r"^https?://", MINERADIO_EXTERNAL_URL, flags=re.I):
     MINERADIO_EXTERNAL_URL = f"https://{MINERADIO_EXTERNAL_URL}"
 _mineradio_process: subprocess.Popen | None = None
