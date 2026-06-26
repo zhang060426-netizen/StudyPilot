@@ -7,7 +7,10 @@ import io
 import json
 import os
 import re
+import socket
 import sqlite3
+import subprocess
+import time
 from urllib.parse import quote_plus
 from collections import defaultdict
 from calendar import monthrange
@@ -17,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 
 try:
-    from nicegui import ui
+    from nicegui import app, ui
 except ModuleNotFoundError as exc:
     raise SystemExit(
         "NiceGUI is not installed. Run: pip install -r requirements.txt\n"
@@ -42,6 +45,76 @@ from tools import (
 
 
 agent = MainAgent()
+MINERADIO_DIR = Path(__file__).resolve().parent.parent / "Mineradio"
+MINERADIO_HOST = "127.0.0.1"
+MINERADIO_PORT = int(os.getenv("MINERADIO_PORT", "3100"))
+MINERADIO_URL = f"http://{MINERADIO_HOST}:{MINERADIO_PORT}"
+MINERADIO_EXTERNAL_URL = (os.getenv("MINERADIO_EXTERNAL_URL") or "").strip()
+if MINERADIO_EXTERNAL_URL and not re.match(r"^https?://", MINERADIO_EXTERNAL_URL, flags=re.I):
+    MINERADIO_EXTERNAL_URL = f"https://{MINERADIO_EXTERNAL_URL}"
+_mineradio_process: subprocess.Popen | None = None
+
+
+def _port_is_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def ensure_mineradio_running() -> tuple[bool, str]:
+    global _mineradio_process
+    if MINERADIO_EXTERNAL_URL:
+        return True, "已连接线上 Mineradio。"
+    if _port_is_open(MINERADIO_HOST, MINERADIO_PORT):
+        return True, "Mineradio 已经在运行。"
+    if not (MINERADIO_DIR / "server.js").exists():
+        return False, f"没有找到 Mineradio 项目目录: {MINERADIO_DIR}"
+    if not (MINERADIO_DIR / "node_modules").exists():
+        return False, "Mineradio 依赖还没安装，请在 Mineradio 目录执行 npm install。"
+
+    stdout_path = MINERADIO_DIR.parent / "mineradio_stdout.log"
+    stderr_path = MINERADIO_DIR.parent / "mineradio_stderr.log"
+    env = os.environ.copy()
+    env["HOST"] = MINERADIO_HOST
+    env["PORT"] = str(MINERADIO_PORT)
+    env.setdefault("MINERADIO_UPDATE_DIR", str(MINERADIO_DIR / "updates"))
+    env.setdefault("MINERADIO_BEAT_CACHE_DIR", str(MINERADIO_DIR / "updates" / "beatmaps"))
+    try:
+        stdout = stdout_path.open("a", encoding="utf-8")
+        stderr = stderr_path.open("a", encoding="utf-8")
+        _mineradio_process = subprocess.Popen(
+            ["node", "server.js"],
+            cwd=MINERADIO_DIR,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+    except OSError as exc:
+        return False, f"无法启动 Mineradio: {exc}"
+
+    for _ in range(20):
+        if _port_is_open(MINERADIO_HOST, MINERADIO_PORT):
+            return True, "Mineradio 已启动。"
+        if _mineradio_process.poll() is not None:
+            return False, "Mineradio 启动后立即退出，请查看 mineradio_stderr.log。"
+        time.sleep(0.15)
+    return True, "Mineradio 正在启动，页面可能需要几秒钟加载。"
+
+
+def open_mineradio() -> None:
+    ok, message = ensure_mineradio_running()
+    ui.notify(message, color="positive" if ok else "warning")
+    if ok:
+        ui.navigate.to(MINERADIO_EXTERNAL_URL or MINERADIO_URL, new_tab=True)
+
+
+@app.get("/api/mineradio/start")
+def start_mineradio_api() -> dict[str, object]:
+    ok, message = ensure_mineradio_running()
+    return {"ok": ok, "message": message, "url": MINERADIO_EXTERNAL_URL or MINERADIO_URL, "mode": "web"}
 
 
 def build_web_search_url(query: str, mode: str = "web") -> str:
@@ -346,6 +419,17 @@ def render_hero(todos_count: int, high_count: int) -> None:
             with ui.element("div").classes("hero-inline-stat"):
                 ui.label(f"{todos_count} 项未完成")
                 ui.label(f"{high_count} 项高优先级")
+
+
+def render_mineradio_float() -> None:
+    with ui.element("button").props(
+        f'type="button" aria-label="打开 Mineradio 沉浸式学习音乐空间" data-mineradio-float data-mineradio-url="{MINERADIO_URL}"'
+    ).classes("mineradio-float"):
+        with ui.element("span").classes("mineradio-disc").props('aria-hidden="true"'):
+            ui.element("span").classes("mineradio-disc-core")
+        with ui.element("span").classes("mineradio-float-copy"):
+            ui.label("沉浸式学习").classes("mineradio-float-title")
+            ui.label("Mineradio").classes("mineradio-float-subtitle")
 
 
 def render_daily_plan(todos: list[dict[str, object]]) -> None:
@@ -1129,6 +1213,7 @@ def render_dashboard(app_panels) -> None:
     high = [todo for todo in unfinished_todos if todo.get("priority") == "高"]
 
     with ui.element("div").classes("dashboard-shell"):
+        render_mineradio_float()
         render_hero(len(unfinished_todos), len(high))
         with ui.element("div").classes("dashboard-stage animate-card"):
             with ui.tabs().classes("dashboard-feature-tabs") as dashboard_tabs:
@@ -2667,6 +2752,7 @@ def main() -> None:
         .card-head { gap: 8px; margin-bottom: 6px; }
         .section-icon { color: #2563EB; background: #EFF6FF; border-radius: 10px; padding: 6px; }
         .dashboard-shell {
+          position: relative;
           width: 100%;
           min-height: 100vh;
           display: flex;
@@ -2674,6 +2760,122 @@ def main() -> None:
           align-items: center;
           gap: 26px;
           padding: 46px 0 20px;
+        }
+        .mineradio-float {
+          position: fixed;
+          right: clamp(16px, 3vw, 36px);
+          bottom: clamp(18px, 5vw, 42px);
+          z-index: 2500;
+          width: 142px;
+          min-height: 72px;
+          display: grid;
+          grid-template-columns: 54px minmax(0, 1fr);
+          align-items: center;
+          gap: 10px;
+          padding: 10px 12px 10px 10px;
+          border: 1px solid rgba(255,255,255,.64);
+          border-radius: 16px;
+          color: #0F172A;
+          background: rgba(255,255,255,.72);
+          box-shadow: 0 18px 34px rgba(15,23,42,.16), inset 0 1px 0 rgba(255,255,255,.75);
+          backdrop-filter: blur(18px) saturate(1.15);
+          -webkit-backdrop-filter: blur(18px) saturate(1.15);
+          cursor: grab;
+          user-select: none;
+          touch-action: none;
+          transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+        }
+        .mineradio-float:hover {
+          transform: translateY(-2px);
+          background: rgba(255,255,255,.84);
+          box-shadow: 0 22px 42px rgba(15,23,42,.2), inset 0 1px 0 rgba(255,255,255,.88);
+        }
+        .mineradio-float:active {
+          cursor: grabbing;
+        }
+        .mineradio-float.is-dragging {
+          transition: none;
+          transform: scale(.98);
+        }
+        .mineradio-disc {
+          position: relative;
+          width: 54px;
+          height: 54px;
+          display: block;
+          border-radius: 50%;
+          background:
+            radial-gradient(circle at 50% 50%, #F4F7FB 0 5%, #1F5FAF 6% 12%, #EFF6FF 13% 21%, transparent 22%),
+            repeating-radial-gradient(circle at 50% 50%, rgba(255,255,255,.16) 0 1px, transparent 1px 3px),
+            radial-gradient(circle at 30% 24%, rgba(255,255,255,.36) 0 10%, transparent 26%),
+            conic-gradient(from 28deg, rgba(255,255,255,.18), transparent 16%, rgba(96,165,250,.18) 25%, transparent 36%, rgba(255,255,255,.12) 48%, transparent 64%, rgba(37,99,235,.14) 74%, transparent 100%),
+            radial-gradient(circle at 50% 50%, #1C2433 0 47%, #0B1020 72%, #020617 100%);
+          box-shadow:
+            0 10px 20px rgba(15,23,42,.22),
+            inset 0 0 0 1px rgba(255,255,255,.24),
+            inset 0 0 0 7px rgba(255,255,255,.035),
+            inset 0 0 18px rgba(0,0,0,.62);
+          animation: mineradio-spin 10.5s linear infinite;
+        }
+        .mineradio-disc::before,
+        .mineradio-disc::after {
+          content: "";
+          position: absolute;
+          border-radius: 50%;
+          pointer-events: none;
+        }
+        .mineradio-disc::before {
+          inset: 5px;
+          background:
+            linear-gradient(118deg, transparent 0 34%, rgba(255,255,255,.2) 35% 40%, transparent 41% 100%),
+            radial-gradient(circle at 50% 50%, transparent 0 34%, rgba(255,255,255,.08) 35% 36%, transparent 37% 52%, rgba(255,255,255,.08) 53% 54%, transparent 55%);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+        }
+        .mineradio-disc::after {
+          inset: 18px;
+          background:
+            radial-gradient(circle at 50% 50%, #111827 0 12%, transparent 13%),
+            radial-gradient(circle at 38% 30%, rgba(255,255,255,.34), transparent 36%),
+            linear-gradient(145deg, #DCEBFF, #60A5FA 48%, #1D4ED8);
+          border: 2px solid rgba(255,255,255,.72);
+          box-shadow:
+            0 0 0 1px rgba(15,23,42,.18),
+            inset 0 1px 3px rgba(255,255,255,.48),
+            inset 0 -3px 8px rgba(15,23,42,.2);
+        }
+        .mineradio-disc-core {
+          position: absolute;
+          inset: 25px;
+          z-index: 1;
+          border-radius: 50%;
+          background: #F8FAFC;
+          box-shadow: 0 0 0 1px rgba(15,23,42,.34), 0 0 0 3px rgba(255,255,255,.24);
+        }
+        .mineradio-float-copy {
+          display: flex;
+          min-width: 0;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 1px;
+          text-align: left;
+          line-height: 1.1;
+        }
+        .mineradio-float-title,
+        .mineradio-float-subtitle {
+          margin: 0;
+          white-space: nowrap;
+        }
+        .mineradio-float-title {
+          color: #172033;
+          font-size: 13px;
+          font-weight: 900;
+        }
+        .mineradio-float-subtitle {
+          color: #2563EB;
+          font-size: 12px;
+          font-weight: 800;
+        }
+        @keyframes mineradio-spin {
+          to { transform: rotate(360deg); }
         }
         .dashboard-hero {
           width: min(1120px, 100%);
@@ -6526,6 +6728,21 @@ def main() -> None:
           .main-tab-panels .q-tab-panel { padding: 88px 12px 28px; }
           .main-tab-panels .q-tab-panel:first-child { padding: 0; }
           .dashboard-shell { padding-top: 56px; gap: 16px; }
+          .mineradio-float {
+            width: 68px;
+            min-height: 68px;
+            grid-template-columns: 1fr;
+            padding: 7px;
+            border-radius: 15px;
+          }
+          .mineradio-disc {
+            width: 54px;
+            height: 54px;
+            justify-self: center;
+          }
+          .mineradio-float-copy {
+            display: none;
+          }
           .dashboard-hero { min-height: 310px; padding: 0 16px; }
           .hero-title { font-size: clamp(42px, 14vw, 62px); }
           .hero-subtitle { font-size: 17px; }
@@ -7038,19 +7255,121 @@ def main() -> None:
           const isAiNotes = !!activeTab && activeTab.textContent.replace(/\\s+/g, "").includes("AI问笔记");
           header?.classList.toggle("ai-notes-active", isAiNotes);
         };
+        window.studypilotMineradio = {
+          async open(element) {
+            const targetUrl = element?.dataset?.mineradioUrl || "http://127.0.0.1:3100";
+            let opened = null;
+            try {
+              opened = window.open("about:blank", "_blank");
+              const response = await fetch("/api/mineradio/start", { cache: "no-store" });
+              const payload = await response.json();
+              if (!payload.ok) {
+                if (opened) opened.close();
+                alert(payload.message || "Mineradio 暂时无法启动。");
+                return;
+              }
+              if (opened) {
+                opened.location.href = payload.url || targetUrl;
+              } else {
+                window.location.href = payload.url || targetUrl;
+              }
+            } catch (error) {
+              if (opened) {
+                opened.location.href = targetUrl;
+              } else {
+                window.location.href = targetUrl;
+              }
+            }
+          },
+          bindFloat() {
+            const element = document.querySelector("[data-mineradio-float]");
+            if (!element || element.dataset.dragBound === "true") return;
+            element.dataset.dragBound = "true";
+            const storageKey = "studypilot.mineradioFloat";
+            const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+            const place = (left, top) => {
+              const maxLeft = Math.max(8, window.innerWidth - element.offsetWidth - 8);
+              const maxTop = Math.max(72, window.innerHeight - element.offsetHeight - 8);
+              element.style.left = `${clamp(left, 8, maxLeft)}px`;
+              element.style.top = `${clamp(top, 72, maxTop)}px`;
+              element.style.right = "auto";
+              element.style.bottom = "auto";
+            };
+            try {
+              const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
+              if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+                place(saved.left, saved.top);
+              }
+            } catch (error) {}
+
+            let state = null;
+            element.addEventListener("pointerdown", (event) => {
+              if (event.button !== undefined && event.button !== 0) return;
+              const rect = element.getBoundingClientRect();
+              state = {
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                startY: event.clientY,
+                left: rect.left,
+                top: rect.top,
+                dragged: false,
+              };
+              element.setPointerCapture?.(event.pointerId);
+              element.classList.add("is-dragging");
+            });
+            element.addEventListener("pointermove", (event) => {
+              if (!state || state.pointerId !== event.pointerId) return;
+              const dx = event.clientX - state.startX;
+              const dy = event.clientY - state.startY;
+              if (Math.abs(dx) + Math.abs(dy) > 6) state.dragged = true;
+              place(state.left + dx, state.top + dy);
+            });
+            const finish = (event) => {
+              if (!state || state.pointerId !== event.pointerId) return;
+              const wasDragged = state.dragged;
+              state = null;
+              element.classList.remove("is-dragging");
+              const rect = element.getBoundingClientRect();
+              localStorage.setItem(storageKey, JSON.stringify({ left: rect.left, top: rect.top }));
+              if (wasDragged) {
+                element.dataset.justDragged = "true";
+                window.setTimeout(() => { element.dataset.justDragged = "false"; }, 180);
+              }
+            };
+            element.addEventListener("pointerup", finish);
+            element.addEventListener("pointercancel", finish);
+            element.addEventListener("click", (event) => {
+              if (element.dataset.justDragged === "true") {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
+              event.preventDefault();
+              window.studypilotMineradio.open(element);
+            }, true);
+            window.addEventListener("resize", () => {
+              const rect = element.getBoundingClientRect();
+              place(rect.left, rect.top);
+            });
+          }
+        };
         window.addEventListener("load", () => window.studypilotMotion.enter());
         window.addEventListener("load", () => {
           window.studypilotTabs.bindDashboardActivation();
           window.studypilotTabs.syncTopHeader();
+          window.studypilotMineradio.bindFloat();
           window.setTimeout(() => window.studypilotTabs.bindDashboardActivation(), 300);
           window.setTimeout(() => window.studypilotTabs.syncTopHeader(), 300);
+          window.setTimeout(() => window.studypilotMineradio.bindFloat(), 300);
         });
         document.addEventListener("DOMContentLoaded", () => {
           window.studypilotMotion.enter();
           window.studypilotTabs.bindDashboardActivation();
           window.studypilotTabs.syncTopHeader();
+          window.studypilotMineradio.bindFloat();
           window.setTimeout(() => window.studypilotTabs.bindDashboardActivation(), 300);
           window.setTimeout(() => window.studypilotTabs.syncTopHeader(), 300);
+          window.setTimeout(() => window.studypilotMineradio.bindFloat(), 300);
         });
         </script>
         """,

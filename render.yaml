@@ -10,3 +10,17 @@ services:
         value: demo
       - key: PYTHON_VERSION
         value: 3.12.6
+      - key: MINERADIO_EXTERNAL_URL
+        value: https://studypilot-mineradio.onrender.com
+  - type: web
+    name: studypilot-mineradio
+    runtime: node
+    plan: free
+    rootDir: Mineradio
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 24.15.0
+      - key: HOST
+        value: 0.0.0.0
