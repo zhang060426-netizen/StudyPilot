@@ -459,7 +459,10 @@ def render_dashboard_summary(
     def show_app_panel(value: str):
         def handler() -> None:
             app_panels.set_value(value)
-            ui.run_javascript("window.scrollTo({ top: 0, behavior: 'smooth' });")
+            ui.run_javascript(
+                "window.scrollTo({ top: 0, behavior: 'smooth' });"
+                "window.setTimeout(() => window.studypilotTabs?.syncTopHeader?.(), 50);"
+            )
 
         return handler
 
@@ -1164,7 +1167,10 @@ def render_qa(app_panels) -> None:
     def show_app_panel(label: str):
         def handler(event=None) -> None:
             app_panels.set_value(label)
-            ui.run_javascript("window.scrollTo({ top: 0, behavior: 'smooth' });")
+            ui.run_javascript(
+                "window.scrollTo({ top: 0, behavior: 'smooth' });"
+                "window.setTimeout(() => window.studypilotTabs?.syncTopHeader?.(), 50);"
+            )
 
         return handler
 
@@ -2585,6 +2591,16 @@ def main() -> None:
         .main-tab-panels .q-tab-panel:first-child {
           padding: 0;
         }
+        .main-tab-panels .q-tab-panel:has(.notebooklm-shell) {
+          padding: 0;
+          min-height: 100vh;
+        }
+        .top-header.ai-notes-active {
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+          transform: translateX(-50%) translateY(-16px);
+        }
         .q-tabs {
           background: rgba(255,255,255,.42);
           border: 1px solid rgba(148,163,184,.22);
@@ -3233,7 +3249,7 @@ def main() -> None:
         }
         .notebooklm-topbar {
           height: 64px;
-          padding: 88px 24px 0;
+          padding: 12px 24px 0;
           gap: 28px;
           box-sizing: content-box;
         }
@@ -5335,7 +5351,7 @@ def main() -> None:
             overflow: visible;
           }
           .nlm-panel { min-height: 560px; }
-          .notebooklm-topbar { flex-wrap: wrap; height: auto; min-height: 92px; padding: 16px 20px; }
+          .notebooklm-topbar { flex-wrap: wrap; height: auto; min-height: 92px; padding: 16px 20px 0; }
         }
         .review-toolbar {
           width: 100%;
@@ -7016,15 +7032,25 @@ def main() -> None:
             }
           });
         };
+        window.studypilotTabs.syncTopHeader = () => {
+          const header = document.querySelector(".top-header");
+          const activeTab = document.querySelector(".top-tabs .q-tab--active, .top-tabs .q-tab[aria-selected='true']");
+          const isAiNotes = !!activeTab && activeTab.textContent.replace(/\\s+/g, "").includes("AI问笔记");
+          header?.classList.toggle("ai-notes-active", isAiNotes);
+        };
         window.addEventListener("load", () => window.studypilotMotion.enter());
         window.addEventListener("load", () => {
           window.studypilotTabs.bindDashboardActivation();
+          window.studypilotTabs.syncTopHeader();
           window.setTimeout(() => window.studypilotTabs.bindDashboardActivation(), 300);
+          window.setTimeout(() => window.studypilotTabs.syncTopHeader(), 300);
         });
         document.addEventListener("DOMContentLoaded", () => {
           window.studypilotMotion.enter();
           window.studypilotTabs.bindDashboardActivation();
+          window.studypilotTabs.syncTopHeader();
           window.setTimeout(() => window.studypilotTabs.bindDashboardActivation(), 300);
+          window.setTimeout(() => window.studypilotTabs.syncTopHeader(), 300);
         });
         </script>
         """,
@@ -7033,11 +7059,17 @@ def main() -> None:
 
     def show_ai_notes() -> None:
         main_panels.set_value("AI 问笔记")
-        ui.run_javascript("window.scrollTo({ top: 0, behavior: 'smooth' });")
+        ui.run_javascript(
+            "window.scrollTo({ top: 0, behavior: 'smooth' });"
+            "window.setTimeout(() => window.studypilotTabs?.syncTopHeader?.(), 50);"
+        )
 
     with ui.header().classes("top-header"):
         ui.label("StudyPilot").classes("top-brand")
-        with ui.tabs().props("active-color=dark indicator-color=transparent").classes("top-tabs") as tabs:
+        with ui.tabs().props("active-color=dark indicator-color=transparent").classes("top-tabs").on(
+            "click",
+            lambda: ui.timer(0.05, lambda: ui.run_javascript("window.studypilotTabs?.syncTopHeader?.();"), once=True),
+        ) as tabs:
             ui.tab("学习驾驶舱", icon="dashboard")
             ui.tab("AI 问笔记", icon="chat")
             ui.tab("任务管理", icon="checklist")
